@@ -1,113 +1,138 @@
 import streamlit as st
 import os
 import cv2
-import sqlite3
+import numpy as np
 import pandas as pd
 from deepface import DeepFace
-from sqlite3 import Error
+from typing import List, Union
+import time
 
-DB_FILE = "rank.db"
+base_path = os.path.abspath(os.getcwd())
+data_path = os.path.join(base_path, "data")
+temp_path = os.path.join(data_path, "temp.png")
 
-def main():
-    conn = create_connection()
-    if conn is None:
-      st.write("Error: Unable to create database connection")
-      return
-    else:
-      if not os.path.exists(DB_FILE):   
-        create_table(conn)
+main_df_path = os.path.join(data_path, "df.csv")
+backup_df_path = os.path.join(data_path, "backup.csv")
 
-    st.title("Smile Rank App")
-    
-    # Input fields for name and phone number
-    name = st.text_input("Name:")
-    phone = st.text_input("Phone Number:")
-    
-    # Placeholder for storing scores
-#    scores_df = pd.DataFrame(columns=["Picture", "Score"])
-    
-    # Loop for taking up to 3 pictures
-    for i in range(3):
-        st.write("------------------------------------------------")
-        # Take a picture
-        if st.button("Take a Picture", key=f'pic_{i}'):
-            st.write(f"Taking Picture {i+1}")
-            image, score = take_picture(f'pic_{name}_{i}')
-#            scores_df = scores_df.append({"Picture": image, "Score": score}, ignore_index=True)
-#            st.write(f"Picture {i+1} - Happy Score: {score}")
-            
-            # Display "One More Time?" and "Finish" buttons
-            if i < 2:
-                pass
-                # one_more_time = st.button("One More Time?", key="one_more")
-                # if not one_more_time:
-                    #break
-            else:
-                st.write("You have reached the maximum number of pictures.")
-                break
+def get_rank_data():
+    df = pd.read_csv(
+        main_df_path,
+        sep="$",
+        na_values="None"
+    )
+    return df
 
-    # Sort and display scores
-#    if not scores_df.empty:
-#        sorted_scores_df = scores_df.sort_values(by="Score", ascending=False)
-#        st.write("Rank:")
-#        st.table(sorted_scores_df[["Picture", "Happy Score"]].reset_index(drop=True))
-    
-    conn.close()
+def put_data(name: str, contect: str, score1: float, score2: float) -> None:
+    name.replace('$', '_')
+    contect.replace('$', '_')
+    with open(main_df_path, 'a') as f:
+        f.write("$".join([name, contect, str(score1), str(score2), time.time()])+'\n')
+    with open(main_df_path, 'a') as f:
+        f.write("$".join([name, contect, str(score1), str(score2), time.time()])+'\n')
 
-def take_picture(file_name):
+def take_picture():
     # Function to capture picture from camera
     cap = cv2.VideoCapture(0)
     ret, frame = cap.read()
     cap.release()
 
     # Save the image temporarily to get the 'happy' score
-    temp_path = "./" + file_name + ".png"
     cv2.imwrite(temp_path, frame)
 
-    # DeepFace to get 'happy' score
-    result = DeepFace.analyze(img_path=temp_path, actions=['emotion'])
-    score = result[0]['emotion']['happy']
+def save_data(name, contect, score1, score2) -> List[Union[int, float, List[float]]]:
+    # int, float, List[float], float, List[float]
+    # history_buffer = get_buffer()
+    history_buffer = st.session_state['cache']
 
-    st.write(score)
-    return temp_path, score
-
-def create_connection():
-    # check file 
-    try:
-      conn = sqlite3.connect(DB_FILE)
-      return conn
-    except Error as e:
-      print(e)
-
-    return None
-
-def create_table(conn):
-    sql_create_table = """
-        CREATE TABLE IF NOT EXISTS rank (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            picture TEXT NOT NULL,
-            score REAL NOT NULL
+    print(history_buffer)
+    if history_buffer["name"] != name:
+        history_buffer["name"] = name
+        history_buffer["score1"] = []
+        history_buffer["score2"] = []
+    history_buffer["contect"] = contect
+    history_buffer["score1"].append(score1)
+    history_buffer["score2"].append(score2)
+    if len(history_buffer) >= 3:
+        put_data(
+            name,
+            contect,
+            max(history_buffer["score1"]),
+            max(history_buffer["score2"]),
         )
-    """
-    try:
-        c = conn.cursor()
-        c.execute(sql_create_table)
-    except Error as e:
-        print(e)
 
-def insert_rank(conn, name, phone, picture, score):
-    sql_insert_rank = """
-        INSERT INTO rank (name, phone, picture, score)
-        VALUES (?, ?, ?, ?)
-    """
-    try:
-        c = conn.cursor()
-        c.execute(sql_insert_rank, (name, phone, picture, score))
-        conn.commit()
-    except Error as e:
-        print(e)
+    return [
+        len(history_buffer["score1"]),
+        max(history_buffer["score1"]),
+        history_buffer["score1"],
+        max(history_buffer["score2"]),
+        history_buffer["score2"],
+    ]
+
+def main():
+    st.title("파이썬 웃음챌린지")
+    side_r, side_l = st.columns(2)
+    with side_r:
+        img_file_buffer = st.camera_input("Take a picture")
+
+        # Input fields for name and contect info
+        name = st.text_input("Name:")
+        contect = st.text_input("Phone Number (or email address):")
+
+    with side_l:
+        if img_file_buffer is not None:
+            # To read image file buffer with OpenCV:
+            bytes_data = img_file_buffer.getvalue()
+            cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+
+            cv2.imwrite(temp_path, cv2_img)
+            # take_picture()
+            try:
+                result = DeepFace.analyze(
+                    img_path=temp_path, actions=['emotion'], enforce_detection=False
+                )
+                st.header("도전자 정보")
+                st.write(f"이름(Name): {name}")
+                st.write(f"연락처(Contect): {contect}")
+                process_data = save_data(
+                    name,
+                    contect,
+                    result[0]['emotion']['happy'],
+                    result[0]['emotion']['happy'] * 2 - sum(result[0]['emotion'].values())
+                )
+                print("DEBUG]", result[0]['emotion'])
+                a = {"test": ""}
+                
+                if process_data[0] >= 3:
+                    st.subheader("최종 결과")
+                    col1, col2 = st.columns(2)
+                    col1.metric(
+                        label="Score",
+                        value=round(process_data[1], 3),
+                    )
+                    col2.metric(
+                        label="Score+",
+                        value=round(process_data[3], 3)
+                    )
+
+                    st.markdown('<a href="/ranking" target="_self">🏆 Ranking 확인하기</a>', unsafe_allow_html=True)
+                st.divider()
+                col1, col2, col3 = st.columns(3)
+                col1.metric("시도(Try)", f"{process_data[0]}회", "+1회")
+                col2.metric(
+                    label="Score",
+                    value=round(process_data[2][-1], 3),
+                    delta=round(process_data[2][-2], 1) if len(process_data[2]) > 1 else None
+                )
+                col3.metric(
+                    label="Score+",
+                    value=round(process_data[4][-1], 3),
+                    delta=round(process_data[4][-2], 1) if len(process_data[4]) > 1 else None
+                )
+                
+            except ValueError:
+                st.write('얼굴을 인식하지 못했어요 ㅠㅠ 다시 시도해 주세요!')
 
 if __name__ == "__main__":
+    if 'cache' not in st.session_state:
+        st.session_state["cache"] = {"name":'???', "contect":'???????', "score1":[], "score2":[]}
     main()
